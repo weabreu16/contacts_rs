@@ -1,71 +1,64 @@
+use mongodb::bson::doc;
 use rocket::State;
-use rocket::futures::lock::Mutex;
 use rocket::serde::json::{Json, json, Value};
 use rocket::fairing::AdHoc;
 
+use crate::lib::error::ApiError;
 use crate::models::contact::{Contact, UpdateContact};
+use crate::services::ContactService;
 
-type ContactList = Mutex<Vec<Contact>>;
-type Contacts<'r> = &'r State<ContactList>;
+type ContactServiceState<'r> = &'r State<ContactService>;
 
 #[post("/", format="json", data="<contact>")]
-pub async fn create(contact: Json<Contact>, list: Contacts<'_>) -> Value {
-    let mut list = list.lock().await;
-
-    let id = list.len();
-    list.push(contact.into_inner());
-
-    json!({
-        "status": "ok",
-        "id": id
-    })
+pub async fn create(
+    contact: Json<Contact>, 
+    contact_service: ContactServiceState<'_>
+) -> Result<Json<Contact>, ApiError> {
+    match contact_service.create(contact.into_inner()).await {
+        Ok(contact) => Ok(Json(contact)),
+        Err(err) => Err(err)
+    }
 }
 
 #[get("/<id>")]
-pub async fn find(id: usize, list: Contacts<'_>) -> Option<Json<Contact>> {
-    let list = list.lock().await;
-
-    let finded_contact = list.get(id)?.clone();
-
-    Some(Json(finded_contact))
+pub async fn find(
+    id: String, 
+    contact_service: ContactServiceState<'_>
+) -> Result<Json<Contact>, ApiError> {
+    match contact_service.find_one(&id).await {
+        Ok(contact) => Ok(Json(contact)),
+        Err(err) => Err(err)
+    }
 }
 
 #[get("/user/<user_id>")]
-pub async fn find_by_user_id(user_id: String, list: Contacts<'_>) -> Option<Json<Vec<Contact>>> {
-    let list = list.lock().await;
+pub async fn find_by_user_id(
+    user_id: String, 
+    contact_service: ContactServiceState<'_>
+) -> Json<Vec<Contact>> {
+    let contacts = contact_service.find_all_by_user_id(&user_id).await;
 
-    let contact_list = list.iter()
-        .filter(|contact| contact.user_id == user_id)
-        .cloned()
-        .collect();
-
-    Some(Json(contact_list))
+    Json(contacts)
 }
 
 #[put("/<id>", format="json", data="<update_contact>")]
 pub async fn update(
-    id: usize,
+    id: String,
     update_contact: Json<UpdateContact>,
-    list: Contacts<'_>
-) -> Option<Json<Contact>> {
-    match list.lock().await.get_mut(id) {
-        Some(existing) => {
-            existing.update(update_contact.into_inner());
-
-            let updated_contact = existing.clone();
-            Some(Json(updated_contact))
-        },
-        None => None
+    contact_service: ContactServiceState<'_>
+) -> Result<Json<Contact>, ApiError> {
+    match contact_service.update(&id, update_contact.into_inner()).await {
+        Ok(updated_contact) => Ok(Json(updated_contact)),
+        Err(err) => Err(err)
     }
 }
 
 #[delete("/<id>")]
-pub async fn remove(id: usize, list: Contacts<'_>) -> Value {
-    let mut list = list.lock().await;
-
-    list.remove(id);
-
-    json!({"status": "ok"})
+pub async fn remove(id: String, contact_service: ContactServiceState<'_>) -> Result<Value, ApiError> {
+    match contact_service.delete(&id).await {
+        Ok(_) => Ok(json!({"result": true})),
+        Err(err) => Err(err)
+    }
 }
 
 pub fn stage() -> AdHoc {
@@ -73,6 +66,5 @@ pub fn stage() -> AdHoc {
         rocket.mount("/contacts", routes![
             create, find, find_by_user_id, update, remove
         ])
-            .manage(ContactList::new(vec![]))
     })
 }
